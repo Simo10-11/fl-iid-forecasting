@@ -1,0 +1,42 @@
+# --- Dataset ---
+# CESNET-TimeSeries24 pesa ~150 MB e viene scaricato automaticamente da cesnet-tszoo
+# alla prima esecuzione. Non va versionato.
+data/
+
+# --- Output degli esperimenti ---
+# Rigenerato a ogni run con save-model = true
+final_model.pt
+*.pt
+*.pth
+*.log
+output/
+results/
+
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# --- Ambienti virtuali ---
+.venv/
+venv/
+env/
+flwr-env/
+
+# --- Flower ---
+.flwr/
+
+# --- IDEs ---
+.claude/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+.ipynb_checkpoints/
+.env

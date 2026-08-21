@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fl-iid-forecasting"
+version = "1.1.6"
+description = "Federated forecasting del traffico di rete (CESNET-TimeSeries24) con Flower e PyTorch"
+license = {file = "LICENSE"}
+dependencies = [
+    "flwr[simulation]>=1.33.0",
+    "torch>=2.10.0",
+    "cesnet-tszoo>=2.2.0",
+    "scikit-learn>=1.4.0",
+    "numpy",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.flwr.app]
+publisher = "flwrlabs"
+fab-format-version = 1
+flwr-version-target = "1.33.0"
+
+[tool.flwr.app.components]
+serverapp = "fl_iid_netforecast.server_app:app"
+clientapp = "fl_iid_netforecast.client_app:app"
+
+[tool.flwr.app.config]
+#--- Dataset ---
+data-root = "./data/cesnet_dataset"
+target-feature = "n_bytes"
+training-window-size = 24
+prediction-window-size = 1
+
+# split train/test, senza insieme di validazione separato: i periodi sono consecutivi
+train-time-period = 0.7
+test-time-period = 0.3
+random-state = 42   #riproducibilità partizionamento
+
+# --- Modello LSTM ---
+hidden-size = 100       
+num-layers = 1
+dropout = 0.0
+learning-rate = 0.001  
+batch-size = 16     # numero di FINESTRE concatenate per formare un mini-batch 
+
+# --- Federated Learning ---
+num-server-rounds = 40
+local-epochs = 3    #epoche per round in ogni client
+fraction-train = 0.25       #percentuale selezionata tra i client disponibili per train
+fraction-evaluate = 1    #percentuale selezionata tra i client disponibili per test
+min-available-clients = 2          #numero di client minimo sul quale lavorare
+save-model = true
+
+
+#PARAMETRI DI CONFIGURAZIONE FLOWER:
+#aumentare numero di num-cpus (io max:20), rallenta ma risparmio ram in esecuzione
+# override per una singola esecuzione
+#flwr run . --stream --federation-config 'num-supernodes=5 client-resources-num-cpus=6'
+
+# cambiare i valori permanenti
+#flwr federation simulation-config @none/default local-simulation \
+    #--num-supernodes 100 \
+    #--client-resources-num-cpus 6 \
+    #--client-resources-num-gpus 0.0 \
+    #--backend-name ray
+
+
+#flwr run . --stream
