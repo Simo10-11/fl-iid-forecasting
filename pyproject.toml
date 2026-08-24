@@ -31,12 +31,23 @@ clientapp = "fl_iid_netforecast.client_app:app"
 #--- Dataset ---
 data-root = "./data/cesnet_dataset"
 target-feature = "n_bytes"
-training-window-size = 24
-prediction-window-size = 1
+training-window-size = 168
+prediction-window-size = 24
 
-# split train/test, senza insieme di validazione separato: i periodi sono consecutivi
+# train_time_period/test_time_period: split temporale per istituzioni
+# Il 70% iniziale (train) va  ai client come training locale.
+# Il 30% finale (test) viene mescolato IID tra tutte le istituzioni e diviso tra
+# server e client: 
+#la somma di test globale + somma dei test locali dei client coincide sempre esattamente con questo 30%.
 train-time-period = 0.7
 test-time-period = 0.3
+
+# global-test-fraction: frazione del pool TEST, 
+# riservata al server come test set GLOBALE, isolata PRIMA di partizionare il resto tra i
+# client [0.5 significa la metà del campione assegnato per test]. Il resto del pool test (1 - global-test-fraction) viene partizionato IID tra i
+# client, come test LOCALE per la federated evaluation.
+global-test-fraction = 0.5
+
 random-state = 42   #riproducibilità partizionamento
 
 # --- Modello LSTM ---
@@ -47,9 +58,9 @@ learning-rate = 0.001
 batch-size = 16     # numero di FINESTRE concatenate per formare un mini-batch 
 
 # --- Federated Learning ---
-num-server-rounds = 40
-local-epochs = 3    #epoche per round in ogni client
-fraction-train = 0.25       #percentuale selezionata tra i client disponibili per train
+num-server-rounds = 20
+local-epochs = 2    #epoche per round in ogni client
+fraction-train = 1       #percentuale selezionata tra i client disponibili per train
 fraction-evaluate = 1    #percentuale selezionata tra i client disponibili per test
 min-available-clients = 2          #numero di client minimo sul quale lavorare
 save-model = true

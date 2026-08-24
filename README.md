@@ -1,6 +1,6 @@
 # Federated Forecasting del traffico di rete (CESNET-TimeSeries24)
 
-Previsione del traffico di rete con **federated learning**, usando [Flower](https://flower.ai) e PyTorch sul dataset [CESNET-TimeSeries24](https://github.com/koumajos/CESNET-TimeSeries24). Ogni client allena un modello LSTM **bidirezionale univariato** su uno split **IID**: le finestre di tutte le istituzioni vengono mescolate e divise in blocchi uguali tra i client, così ognuno riceve un mix rappresentativo del pool.
+Previsione del traffico di rete con **federated learning**, usando [Flower](https://flower.ai) e PyTorch sul dataset [CESNET-TimeSeries24](https://github.com/koumajos/CESNET-TimeSeries24). Ogni istituzione ha uno split temporale train/test (70/30, cronologico): il 70% (train) va per intero ai client, mescolato IID tra tutte le istituzioni e partizionato in fette uguali; il 30% (test) viene anch'esso mescolato IID e diviso tra un test set **globale** del server (mai visto dai client) e un test **locale** per ciascun client, usato per la federated evaluation.
 
 ---
 
@@ -50,7 +50,8 @@ flwr run . --stream --federation-config 'num-supernodes=5 client-resources-num-c
 
 Tutti gli iperparametri stanno in `pyproject.toml`, sotto `[tool.flwr.app.config]`:
 
-- **Dataset**: feature target, dimensione delle finestre di input/predizione, split train/test, seed
+- **Dataset**: feature target, dimensione delle finestre di input/predizione, seed
+- **Split dati**: `train-time-period`/`test-time-period` (70/30 cronologico per istituzione: il 70% train va tutto ai client, il 30% test viene mescolato IID), `global-test-fraction` (frazione del pool test riservata al server come test set globale, isolata prima di partizionare il resto tra i client)
 - **Modello**: dimensioni della LSTM, learning rate, batch size
 - **Federated learning**: numero di round, epoche locali per round, frazione di client per training/valutazione, minimo di client richiesti, salvataggio del modello finale
 
@@ -66,9 +67,10 @@ flwr run . --stream --run-config 'num-server-rounds=20 learning-rate=0.005'
 
 Durante l'esecuzione vengono stampati:
 
-- il pool di istituzioni usato per lo split IID, una sola volta a inizio run
+- il pool di istituzioni usato per lo split IID e la dimensione del test set globale del server, una sola volta a inizio run
 - un log per ogni fase di ogni round (`train -> N client coinvolti`, `evaluate -> N client coinvolti`)
-- le metriche aggregate di training (`train_mse`) e di valutazione (`mse`, `rmse`, `r2`, `harmonic`)
+- le metriche aggregate di training (`train_mse`) e di valutazione federata (`mse`, `rmse`, `r2`, `harmonic`) sui client
+- le metriche di **global evaluation** (`mse`, `rmse`, `r2`, `harmonic`) calcolate dal server sul proprio test set globale, prima del round 1 e dopo ogni round
 
 Se `save-model = true` (default), a fine run il modello globale finale viene salvato come `final_model.pt` nella cartella del progetto.
 

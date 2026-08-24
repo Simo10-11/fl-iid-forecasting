@@ -14,6 +14,11 @@ from cesnet_tszoo.utils.enums import AgreggationType, SourceType
 TARGET_FEATURE_INDEX = 0    # uso solo la feature target, quindi l'indice è 0, (modello univariato)
 
 
+def get_device():
+    """Device di calcolo: GPU se disponibile, altrimenti CPU. Condiviso da client e server."""
+    return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
 class LSTMForecast(nn.Module):
     """LSTM per forecasting: prende in input una finestra di training e predice gli step della finestra di predizione"""
 
@@ -83,7 +88,7 @@ def istituzioni_pool_iid(num_partitions: int, run_config: dict):
 
 def concatena_finestre(loader):
     """Scorre un DataLoader di cesnet_tszoo (una finestra alla volta) e concatena
-    tutte le finestre in due unici array numpy: (n_finestre, window_size, 1)."""
+    tutte le finestre in due unici array: (n_finestre, window_size, 1)."""
     X_all, Y_all = [], []
     for X, Y in loader: #il loader mi da una finestra alla volta, le inglobo rispettivamente in un contenitore X e Y
         X_all.append(X)
@@ -91,33 +96,17 @@ def concatena_finestre(loader):
     return np.concatenate(X_all, axis=0), np.concatenate(Y_all, axis=0) #concateno tutte le finestre in un unico array numpy (n_finestre, window_size, 1)
 
 
-_load_data_cache: dict[tuple[int, int, str], list] = {}  # cache in-memory dei batch già costruiti, per client e split
+def _pool_periodo(periodo: str, num_partitions: int, run_config: dict):
+    """Apre il dataset, configura, e restituisce le finestre di TUTTE le
+    istituzioni del pool (istituzioni_pool_iid) per il periodo temporale richiesto: "train" o "test".
+    I due periodi sono disgiunti e consecutivi nel tempo per ogni istituzione: lo
+    scaler MinMax è fittato dalla libreria SOLO sul periodo "train", quindi non vede mai dati
+    da predire.
 
-
-def load_data(partition_id: int, num_partitions: int, run_config: dict, split: str):
+    Le finestre di TUTTE le istituzioni del pool vengono concatenate in due unici array numpy
+    (n_finestre, window_size, 1), non ancora mescolate né divise tra client/server.
     """
-    Dato l'indice di un client, costruisce il suo dataset IID per lo split richiesto
-    ("train" o "test"): mette insieme le finestre di TUTTE le istituzioni del pool
-    (istituzioni_pool_iid), le mescola con un seed fisso e ne prende un blocco da assegnare a quel client,
-    così ogni client riceve un mix casuale ma riproducibile di tutto il pool, non
-    solo di una singola istituzione.
-
-    Le finestre di TUTTE le istituzioni del pool vengono normalizzate in un'unica
-    inizializzazione, ciascuna con il SUO scaler MinMax individuale i
-    volumi di traffico variano di ordini di grandezza tra istituzioni.
-
-    Il risultato viene cachato per (partition_id, num_partitions, split): ricostruirlo
-    ad ogni round rilegge e riscorre i loader per istituzione trattiene memoria non rilasciata ad ogni chiamata. 
-    Con la cache, eseguo una sola volta per client per l'intera durata della run,
-    invece che una volta per round.
-    """
-    # cahce per client e split: se il client ha già caricato i dati in un round precedente, li riutilizza senza rileggerli da cesnet_tszoo
-    cache_key = (partition_id, num_partitions, split)   
-    if cache_key in _load_data_cache:
-        return _load_data_cache[cache_key]  # hit: nei round successivi salta subito il ricaricamento da cesnet_tszoo
-
-    seed = int(run_config["random-state"])
-    pool = istituzioni_pool_iid(num_partitions, run_config) # ottiene la lista di id istituzioni che formano il pool IID
+    pool = istituzioni_pool_iid(num_partitions, run_config)  # ottiene la lista di id istituzioni che formano il pool IID
 
     dataset = apri_dataset(run_config)
     config = TimeBasedConfig(
@@ -128,8 +117,8 @@ def load_data(partition_id: int, num_partitions: int, run_config: dict, split: s
         sliding_window_size=int(run_config["training-window-size"]),
         sliding_window_prediction_size=int(run_config["prediction-window-size"]),
         sliding_window_step=int(run_config["prediction-window-size"]),
-        random_state=seed,
-        transform_with="min_max_scaler",    # scaler viene fittato solo sul training set 
+        random_state=int(run_config["random-state"]),
+        transform_with="min_max_scaler",    # scaler viene fittato solo sul training set
         include_ts_id=False,
         include_time=False,
     )
@@ -137,32 +126,118 @@ def load_data(partition_id: int, num_partitions: int, run_config: dict, split: s
     # come descritto nel paper per le metriche di volume (n_flows, n_packets, n_bytes)
     dataset.set_dataset_config_and_initialize(config, display_config_details=None)
 
-    # sceglie il tipo di loader richiesto (train o test) 
-    get_loader = dataset.get_train_dataloader if split == "train" else dataset.get_test_dataloader
+    get_loader = dataset.get_train_dataloader if periodo == "train" else dataset.get_test_dataloader
 
     X_parts, Y_parts = [], []   # accumulano le finestre di ciascuna istituzione, prima di unirle tutte insieme
     for institution_id in pool:
         X, Y = concatena_finestre(get_loader(ts_id=institution_id))  #trasforma il loader in due array numpy (n_finestre, window_size, 1) di input e target
         X_parts.append(X)
         Y_parts.append(Y)
+    return np.concatenate(X_parts), np.concatenate(Y_parts)
 
-    # unisco insieme le finestre delle istituzioni del pool in due unici array,
-    # poi mescola l'intero pool con un seed fisso e prende solo il blocco di questo client:
-    # ogni client riceve così un mix casuale ma riproducibile di finestre di istituzioni diverse.
-    #il mescolamento è necessario perché le finestre di ciascuna istituzione sono ordinate temporalmente, e se un client ricevesse solo finestre di una istituzione non avrebbe un training set rappresentativo del pool.
-    #il mescolamento avviene ogni round (non ad ogni epoca locale)
-    X_pool = np.concatenate(X_parts)
-    Y_pool = np.concatenate(Y_parts)
+
+_pool_periodo_cache: dict[tuple[str, int], tuple] = {}  # cache in-memory del pool (X, Y), per (periodo, num_partitions)
+
+
+def _pool_periodo_cached(periodo: str, num_partitions: int, run_config: dict):
+    """Come _pool_periodo, ma cachato: identico per ogni client (non dipende da
+    partition_id), quindi costruito una sola volta per periodo per l'intera run invece che
+    una volta per client., aiuta a risparmiare RAM in lunghe esecuzioni con molti client"""
+    key = (periodo, num_partitions)
+    if key not in _pool_periodo_cache:
+        _pool_periodo_cache[key] = _pool_periodo(periodo, num_partitions, run_config)
+    return _pool_periodo_cache[key]
+
+
+def _dividi_in_batch(X, Y, batch_size):
+    """Taglia X e Y in blocchi consecutivi da batch_size finestre (l'ultimo può essere più corto).
+    Restituisce la lista di questi blocchi come coppie (X_batch, Y_batch)."""
+    return [(X[i:i + batch_size], Y[i:i + batch_size]) for i in range(0, len(X), batch_size)]
+
+
+def _split_test_globale_client(num_partitions: int, run_config: dict):
+    """Split IID a 2 livelli del solo pool TEST.
+
+    1. Prima di tutto si isola dal pool test una fetta globale, 
+        di dimensione global-test-fraction, riservata al server per la global evaluation.
+    2. Il resto del pool test (tutto ciò che non è finito nella fetta globale) viene
+       partizionato IID in num_partitions fette, una per client: è
+       il test LOCALE di ciascun client, usato per la federated evaluation.
+
+    Così facendo, test globale + somma dei test locali coincide sempre esattamente con
+    l'intero pool test (test-time-period).
+    """
+    X_pool, Y_pool = _pool_periodo_cached("test", num_partitions, run_config)
+
+    seed = int(run_config["random-state"])
     rng = np.random.default_rng(seed)   # fisso il seed per avere la stessa mescolazione casuale ma identica per ogni run
-    blocco = np.array_split(rng.permutation(len(X_pool)), num_partitions)[partition_id] #len(X_pool) è il numero totale di finestre nel pool, rng.permutation(N) genera una permutazione casuale di 0..N-1,
-    # np.array_split divide la sequenza in num_partitions (client) blocchi  uguali, e ne prende solo quello di questo client
-    X, Y = X_pool[blocco], Y_pool[blocco]   # ritorno le finestre di training/test di questo client, che sono un mix casuale ma riproducibile di tutte le istituzioni del pool
-    batch_size = int(run_config["batch-size"])
+    permutazione = rng.permutation(len(X_pool))
 
-    #Taglia X e Y in blocchi consecutivi da batch_size finestre (l'ultimo può essere più corto), scorrendo gli indici di partenza 0, batch_size, 2*batch_size, ....
-    #Restituisce la lista di questi blocchi come coppie (X_batch, Y_batch)
-    result = [(X[i:i + batch_size], Y[i:i + batch_size]) for i in range(0, len(X), batch_size)]
-    _load_data_cache[cache_key] = result  # miss: memorizza il risultato, così viene calcolato una sola volta per (client, split)
+    frac_globale = float(run_config["global-test-fraction"])  # frazione del pool TEST (non del totale)
+    n_globale = int(len(permutazione) * frac_globale)
+    idx_globale, idx_resto = permutazione[:n_globale], permutazione[n_globale:]  # 1) fetta server isolata PRIMA di partizionare
+
+    blocchi_client = np.array_split(idx_resto, num_partitions)  # 2) il resto partizionato IID tra i client
+    return X_pool, Y_pool, idx_globale, blocchi_client
+
+
+_test_globale_cache: list | None = None  # cache in-memory del test set globale del server, costruito una sola volta
+
+
+def load_test_globale(num_partitions: int, run_config: dict):
+    """Carica il test set globale del server, che è una fetta dello split di TEST (test-time-period)
+    isolata prima di partizionare il resto tra i client."""
+    global _test_globale_cache
+    if _test_globale_cache is not None:
+        return _test_globale_cache
+
+    X_pool, Y_pool, idx_globale, _ = _split_test_globale_client(num_partitions, run_config)
+    X, Y = X_pool[idx_globale], Y_pool[idx_globale]
+
+    batch_size = int(run_config["batch-size"])
+    _test_globale_cache = _dividi_in_batch(X, Y, batch_size)
+    return _test_globale_cache
+
+
+_load_data_cache: dict[tuple[int, int, str], list] = {}  # cache in-memory dei batch già costruiti, per client e split
+
+
+def load_data(partition_id: int, num_partitions: int, run_config: dict, split: str):
+    """
+    Dato l'indice di un client, costruisce il suo dataset IID per lo split richiesto:
+
+    - "train": il pool TRAIN  viene mescolato IID tra tutte
+      le istituzioni e partizionato in num_partitions fette uguali, una per client. 
+    - "test": il pool TEST  è già diviso da
+     in una fetta globale (server) + fette client, qui si prende solo la fetta di questo client 
+
+    In entrambi i casi ogni client riceve un mix casuale ma riproducibile di finestre di
+    istituzioni diverse, non solo di una singola istituzione.
+
+    Il risultato viene cachato per (partition_id, num_partitions, split): ricostruirlo
+    ad ogni round rilegge e riscorre i loader per istituzione trattiene memoria non rilasciata ad ogni chiamata.
+    Con la cache, eseguo una sola volta per client per l'intera durata della run,
+    invece che una volta per round.
+    """
+    # cahce per client e split: se il client ha già caricato i dati in un round precedente, li riutilizza senza rileggerli da cesnet_tszoo
+    cache_key = (partition_id, num_partitions, split)
+    if cache_key in _load_data_cache:
+        return _load_data_cache[cache_key]  # hit: nei round successivi salta subito il ricaricamento da cesnet_tszoo
+
+    if split == "train":
+        X_pool, Y_pool = _pool_periodo_cached("train", num_partitions, run_config)
+        seed = int(run_config["random-state"])
+        rng = np.random.default_rng(seed)   # fisso il seed per avere la stessa mescolazione casuale ma identica per ogni run
+        blocco = np.array_split(rng.permutation(len(X_pool)), num_partitions)[partition_id]
+    else:
+        X_pool, Y_pool, _, blocchi_client = _split_test_globale_client(num_partitions, run_config)
+        blocco = blocchi_client[partition_id]
+
+    X, Y = X_pool[blocco], Y_pool[blocco]   # ritorno le finestre di questo client, un mix casuale ma riproducibile di tutte le istituzioni del pool
+
+    batch_size = int(run_config["batch-size"])
+    result = _dividi_in_batch(X, Y, batch_size)
+    _load_data_cache[cache_key] = result  # miss: memorizza il risultato, così viene calcolato una volta sola per client
     return result
 
 

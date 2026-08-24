@@ -6,7 +6,8 @@ from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedAvg
 from flwr.serverapp.strategy.strategy_utils import aggregate_metricrecords
 
-from fl_iid_netforecast.task import build_model, istituzioni_pool_iid
+from fl_iid_netforecast.task import build_model, get_device, istituzioni_pool_iid, load_test_globale
+from fl_iid_netforecast.task import test as test_fn
 
 app = ServerApp()
 
@@ -26,6 +27,33 @@ def aggrega_train(records: list[RecordDict], weighting_metric_name: str) -> Metr
 
 def aggrega_evaluate(records: list[RecordDict], weighting_metric_name: str) -> MetricRecord:
     return aggrega_e_stampa(records, weighting_metric_name, "evaluate")
+
+
+def crea_evaluate_centralizzato(run_config: dict, num_partitions: int):
+    """Costruisce evaluate_fn per Flower (parametro di strategy.start): valuta il modello
+    globale aggregato sul test set globale del server (load_test_globale), la fetta isolata
+    PRIMA di partizionare i dati tra i client, quindi mai assegnata a nessun client, né in
+    training né in evaluate federata.
+
+    Flower stesso la chiama "global evaluation" (log di strategy.start, risultati salvati in
+    result.evaluate_metrics_serverapp): automaticamente una volta prima del round 1 (sui pesi
+    iniziali) e una volta dopo ogni round successivo, sui pesi appena aggregati da FedAvg."""
+    device = get_device()
+    test_loader = load_test_globale(num_partitions, run_config)
+    n_finestre = sum(len(X) for X, _ in test_loader)
+    print(f"Global evaluation test set (server): {n_finestre} finestre, mai assegnate ai client\n")
+
+    def evaluate_fn(server_round: int, arrays: ArrayRecord) -> MetricRecord:
+        model = build_model(run_config)
+        model.load_state_dict(arrays.to_torch_state_dict())
+        mse, rmse, r2, h_score, _, _ = test_fn(model, test_loader, device)
+        print(
+            f" global evaluation (server) -> round {server_round}: "
+            f"mse={mse:.4f} rmse={rmse:.4f} r2={r2:.4f} harmonic={h_score:.4f}"
+        )
+        return MetricRecord({"mse": mse, "rmse": rmse, "r2": r2, "harmonic": h_score})
+
+    return evaluate_fn
 
 
 @app.main() #grid: Grid è il modo in cui il server vede e raggiunge i nodi disponibili.
@@ -71,13 +99,20 @@ def main(grid: Grid, context: Context):
     )
 
 
+    # global evaluation (nome di Flower): il server valuta da sé il modello globale aggregato
+    # su un test set suo, isolato PRIMA di partizionare i dati tra i client e mai assegnato a
+    # nessuno di loro (vedi load_test_globale in task.py), in affiancamento alla evaluate
+    # federata sui client (sopra). Flower la chiama prima del round 1 e dopo ogni round successivo.
+    evaluate_fn = crea_evaluate_centralizzato(context.run_config, n_client)
+
     # esegue l'intero esperimento: tutto il ciclo di training federato, con i round di
     # training e di valutazione, viene gestito da start()
     result = strategy.start(    #result: contiene i pesi del modello globale finale e le metriche aggregate di training e valutazione
         grid=grid,
-        initial_arrays=arrays,  # inizializza il modello globale con i pesi random 
+        initial_arrays=arrays,  # inizializza il modello globale con i pesi random
         train_config=ConfigRecord({"lr": lr}),  #  la configurazione allegata a ogni messaggio di training
         num_rounds=num_rounds,
+        evaluate_fn=evaluate_fn,  # valutazione centralizzata lato server, prima del round 1 e dopo ogni round
     )
 
     if context.run_config["save-model"]:

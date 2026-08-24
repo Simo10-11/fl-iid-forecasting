@@ -1,18 +1,13 @@
 """ClientApp: ogni client riceve uno split IID (mix casuale ma riproducibile di tutto il pool di istituzioni)."""
 
-import torch
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 
-from fl_iid_netforecast.task import build_model, load_data
+from fl_iid_netforecast.task import build_model, get_device, load_data
 from fl_iid_netforecast.task import test as test_fn
 from fl_iid_netforecast.task import train as train_fn
 
 app = ClientApp()   #  È l'oggetto che il pyproject.toml cerca (clientapp = "fl_iid_netforecast.client_app:app")
-
-
-def get_device():
-    return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def model_from_message(msg: Message, context: Context):
