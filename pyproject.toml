@@ -31,8 +31,8 @@ clientapp = "fl_iid_netforecast.client_app:app"
 #--- Dataset ---
 data-root = "./data/cesnet_dataset"
 target-feature = "n_bytes"
-training-window-size = 168
-prediction-window-size = 24
+training-window-size = 24
+prediction-window-size = 1
 
 # train_time_period/test_time_period: split temporale per istituzioni
 # Il 70% iniziale (train) va  ai client come training locale.
