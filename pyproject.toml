@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "fl-iid-forecasting"
 version = "1.1.6"
 description = "Federated forecasting del traffico di rete (CESNET-TimeSeries24) con Flower e PyTorch"
-license = {file = "LICENSE"}
 dependencies = [
     "flwr[simulation]>=1.33.0",
     "torch>=2.10.0",
