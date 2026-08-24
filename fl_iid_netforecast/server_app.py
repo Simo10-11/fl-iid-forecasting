@@ -6,7 +6,7 @@ from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedAvg
 from flwr.serverapp.strategy.strategy_utils import aggregate_metricrecords
 
-from fl_iid_netforecast.task import build_model, get_device, istituzioni_pool_iid, load_test_globale
+from fl_iid_netforecast.task import build_model, get_device, load_test_globale
 from fl_iid_netforecast.task import test as test_fn
 
 app = ServerApp()
@@ -15,7 +15,7 @@ app = ServerApp()
 def aggrega_e_stampa(records: list[RecordDict], weighting_metric_name: str, fase: str) -> MetricRecord:
     """Stampa quanti client hanno partecipato a questa fase del round, poi delega l'aggregazione vera a Flower.
     Con lo split IID ogni client mescola più istituzioni, quindi qui non ha più senso elencarle
-    per round: l'elenco delle istituzioni del pool viene stampato una sola volta in main()."""
+    per round."""
 
     print(f" {fase} -> {len(records)} client coinvolti")
     return aggregate_metricrecords(records, weighting_metric_name)  #aggregate_metricrecords è la funzione DI FLOWER
@@ -31,13 +31,7 @@ def aggrega_evaluate(records: list[RecordDict], weighting_metric_name: str) -> M
 
 def crea_evaluate_centralizzato(run_config: dict, num_partitions: int):
     """Costruisce evaluate_fn per Flower (parametro di strategy.start): valuta il modello
-    globale aggregato sul test set globale del server (load_test_globale), la fetta isolata
-    PRIMA di partizionare i dati tra i client, quindi mai assegnata a nessun client, né in
-    training né in evaluate federata.
-
-    Flower stesso la chiama "global evaluation" (log di strategy.start, risultati salvati in
-    result.evaluate_metrics_serverapp): automaticamente una volta prima del round 1 (sui pesi
-    iniziali) e una volta dopo ogni round successivo, sui pesi appena aggregati da FedAvg."""
+    globale aggregato sul test set globale del server"""
     device = get_device()
     test_loader = load_test_globale(num_partitions, run_config)
     n_finestre = sum(len(X) for X, _ in test_loader)
@@ -68,11 +62,7 @@ def main(grid: Grid, context: Context):
     fraction_evaluate: float = float(context.run_config["fraction-evaluate"])
     min_available_clients: int = int(context.run_config["min-available-clients"])
 
-    # Pool di istituzioni usato dallo split IID, stampato una volta a inizio run
-    # (fisso per tutta la durata del run: ogni client ne riceve una fetta a ogni round).
     n_client = len(list(grid.get_node_ids()))
-    pool = istituzioni_pool_iid(n_client, context.run_config)
-    print(f"\nClient: {n_client} | Pool istituzioni IID ({len(pool)}): {pool}\n")
 
     # Il modello globale viene inizializzato UNA SOLA VOLTA, qui. Il seed va fissato solo in
     # questo punto: garantisce che l'inizializzazione dei pesi sia riproducibile tra run, senza
@@ -99,10 +89,7 @@ def main(grid: Grid, context: Context):
     )
 
 
-    # global evaluation (nome di Flower): il server valuta da sé il modello globale aggregato
-    # su un test set suo, isolato PRIMA di partizionare i dati tra i client e mai assegnato a
-    # nessuno di loro (vedi load_test_globale in task.py), in affiancamento alla evaluate
-    # federata sui client (sopra). Flower la chiama prima del round 1 e dopo ogni round successivo.
+    # global evaluation, il server valuta da sé il modello globale aggregato su un test set suo.
     evaluate_fn = crea_evaluate_centralizzato(context.run_config, n_client)
 
     # esegue l'intero esperimento: tutto il ciclo di training federato, con i round di

@@ -22,8 +22,7 @@ def get_device():
 class LSTMForecast(nn.Module):
     """LSTM per forecasting: prende in input una finestra di training e predice gli step della finestra di predizione"""
 
-    # I valori qui sotto sono solo DEFAULT della firma: build_model li passa sempre tutti
-    # espliciti, letti dal run_config. 
+    # I valori qui sotto sono solo DEFAULT della firma
     def __init__(self, input_size, hidden_size=100, num_layers=1, dropout=0.0, output_size=1):  # costruisce l'architettura della rete
         # output_size = prediction_window_size
         super().__init__()
@@ -62,12 +61,10 @@ def build_model(run_config:dict):
     )
 
 
-
-
 def apri_dataset(run_config:dict):
     """Apre il dataset CESNET-TimeSeries24.
     Non carica ancora i dati: serve poi 
-    Sta in una funzione perché la chiameranno in altre funzioni (istituzioni_pool_iid e load_data).
+    Sta in una funzione perché la chiameranno in altre funzioni (istituzioni_disponibili e load_data).
     """
     return CESNET_TimeSeries24.get_dataset(
         data_root=str(run_config["data-root"]),
@@ -78,12 +75,11 @@ def apri_dataset(run_config:dict):
     )
 
 
-def istituzioni_pool_iid(num_partitions: int, run_config: dict):
-    """Id reali delle prime num_partitions istituzioni che formano il pool condiviso
-    da tutti i client (il pool ha sempre dimensione num_partitions: un'istituzione
-    in più per ogni client aggiunto alla federazione)."""
+def istituzioni_disponibili(run_config: dict):
+    """Id reali di TUTTE le istituzioni disponibili nel dataset: il pool condiviso da tutti i
+    client copre l'intero dataset."""
     ids = apri_dataset(run_config).get_available_ts_indices()["id_institution"]
-    return ids[:num_partitions].tolist() #prendo i primi num_partitions id istituzioni reali, che formano il pool condiviso da tutti i client
+    return ids.tolist()  # tutte le istituzioni disponibili nel dataset
 
 
 def concatena_finestre(loader):
@@ -96,17 +92,28 @@ def concatena_finestre(loader):
     return np.concatenate(X_all, axis=0), np.concatenate(Y_all, axis=0) #concateno tutte le finestre in un unico array numpy (n_finestre, window_size, 1)
 
 
-def _pool_periodo(periodo: str, num_partitions: int, run_config: dict):
-    """Apre il dataset, configura, e restituisce le finestre di TUTTE le
-    istituzioni del pool (istituzioni_pool_iid) per il periodo temporale richiesto: "train" o "test".
-    I due periodi sono disgiunti e consecutivi nel tempo per ogni istituzione: lo
-    scaler MinMax è fittato dalla libreria SOLO sul periodo "train", quindi non vede mai dati
-    da predire.
+_finestre_periodo_cache: dict[str, tuple] = {}  # cache in-memory del pool (X, Y), per periodo
 
-    Le finestre di TUTTE le istituzioni del pool vengono concatenate in due unici array numpy
+
+def finestre_periodo(periodo: str, run_config: dict):
+    """Apre il dataset, configura, e restituisce le finestre di TUTTE le
+    istituzioni VALIDE del pool per il periodo temporale richiesto: "train" o "test".Lo scaler MinMax è
+    fittato dalla libreria SOLO sul periodo "train", quindi non vede mai dati da predire.
+
+    Le istituzioni con troppi valori NaN vengono scartate. Le istituzioni che restano possono
+    comunque avere piccoli buchi isolati sotto soglia: quelli vengono comunque riempiti con 0
+    (default_values="default").
+
+    Le finestre di tutte le istituzioni valide vengono concatenate in due unici array numpy
     (n_finestre, window_size, 1), non ancora mescolate né divise tra client/server.
+
+    Cachato per periodo: identico per ogni client, costruito una sola volta per periodo per
+    l'intera run invece che una volta per client.
     """
-    pool = istituzioni_pool_iid(num_partitions, run_config)  # ottiene la lista di id istituzioni che formano il pool IID
+    if periodo in _finestre_periodo_cache:
+        return _finestre_periodo_cache[periodo]
+
+    pool = istituzioni_disponibili(run_config)  # ottiene la lista di id istituzioni che formano il pool IID (l'intero dataset)
 
     dataset = apri_dataset(run_config)
     config = TimeBasedConfig(
@@ -119,43 +126,39 @@ def _pool_periodo(periodo: str, num_partitions: int, run_config: dict):
         sliding_window_step=int(run_config["prediction-window-size"]),
         random_state=int(run_config["random-state"]),
         transform_with="min_max_scaler",    # scaler viene fittato solo sul training set
+        nan_threshold=float(run_config["nan-threshold"]),  # esclude istituzioni con troppi NaN (vedi docstring sopra)
         include_ts_id=False,
         include_time=False,
     )
-    # I valori mancanti vengono riempiti automaticamente con 0 (default_values="default"),
-    # come descritto nel paper per le metriche di volume (n_flows, n_packets, n_bytes)
+    # I valori mancanti (sotto soglia nan_threshold, quindi istituzioni comunque valide)
+    # vengono riempiti automaticamente con 0 (default_values="default"), come descritto nel
+    # paper per le metriche di volume (n_flows, n_packets, n_bytes)
     dataset.set_dataset_config_and_initialize(config, display_config_details=None)
+    pool_valido = dataset.dataset_config.ts_ids.tolist() # lista di istituzioni che restano nel pool dopo aver scartato quelle con troppi NaN
+    n_escluse = len(pool) - len(pool_valido)
+    if n_escluse > 0:
+        print(f"nan-threshold={run_config['nan-threshold']}: {n_escluse} istituzioni escluse per troppi valori mancanti")
 
     get_loader = dataset.get_train_dataloader if periodo == "train" else dataset.get_test_dataloader
 
     X_parts, Y_parts = [], []   # accumulano le finestre di ciascuna istituzione, prima di unirle tutte insieme
-    for institution_id in pool:
+    for institution_id in pool_valido:
         X, Y = concatena_finestre(get_loader(ts_id=institution_id))  #trasforma il loader in due array numpy (n_finestre, window_size, 1) di input e target
         X_parts.append(X)
         Y_parts.append(Y)
-    return np.concatenate(X_parts), np.concatenate(Y_parts)
+
+    risultato = np.concatenate(X_parts), np.concatenate(Y_parts)
+    _finestre_periodo_cache[periodo] = risultato  # memorizzato: le chiamate successive per lo stesso periodo lo riusano senza ricostruirlo
+    return risultato
 
 
-_pool_periodo_cache: dict[tuple[str, int], tuple] = {}  # cache in-memory del pool (X, Y), per (periodo, num_partitions)
-
-
-def _pool_periodo_cached(periodo: str, num_partitions: int, run_config: dict):
-    """Come _pool_periodo, ma cachato: identico per ogni client (non dipende da
-    partition_id), quindi costruito una sola volta per periodo per l'intera run invece che
-    una volta per client., aiuta a risparmiare RAM in lunghe esecuzioni con molti client"""
-    key = (periodo, num_partitions)
-    if key not in _pool_periodo_cache:
-        _pool_periodo_cache[key] = _pool_periodo(periodo, num_partitions, run_config)
-    return _pool_periodo_cache[key]
-
-
-def _dividi_in_batch(X, Y, batch_size):
+def dividi_in_batch(X, Y, batch_size):
     """Taglia X e Y in blocchi consecutivi da batch_size finestre (l'ultimo può essere più corto).
     Restituisce la lista di questi blocchi come coppie (X_batch, Y_batch)."""
     return [(X[i:i + batch_size], Y[i:i + batch_size]) for i in range(0, len(X), batch_size)]
 
 
-def _split_test_globale_client(num_partitions: int, run_config: dict):
+def split_test_globale(num_partitions: int, run_config: dict):
     """Split IID a 2 livelli del solo pool TEST.
 
     1. Prima di tutto si isola dal pool test una fetta globale, 
@@ -167,7 +170,7 @@ def _split_test_globale_client(num_partitions: int, run_config: dict):
     Così facendo, test globale + somma dei test locali coincide sempre esattamente con
     l'intero pool test (test-time-period).
     """
-    X_pool, Y_pool = _pool_periodo_cached("test", num_partitions, run_config)
+    X_pool, Y_pool = finestre_periodo("test", run_config)
 
     seed = int(run_config["random-state"])
     rng = np.random.default_rng(seed)   # fisso il seed per avere la stessa mescolazione casuale ma identica per ogni run
@@ -191,11 +194,11 @@ def load_test_globale(num_partitions: int, run_config: dict):
     if _test_globale_cache is not None:
         return _test_globale_cache
 
-    X_pool, Y_pool, idx_globale, _ = _split_test_globale_client(num_partitions, run_config)
+    X_pool, Y_pool, idx_globale, _ = split_test_globale(num_partitions, run_config)
     X, Y = X_pool[idx_globale], Y_pool[idx_globale]
 
     batch_size = int(run_config["batch-size"])
-    _test_globale_cache = _dividi_in_batch(X, Y, batch_size)
+    _test_globale_cache = dividi_in_batch(X, Y, batch_size)
     return _test_globale_cache
 
 
@@ -214,9 +217,7 @@ def load_data(partition_id: int, num_partitions: int, run_config: dict, split: s
     In entrambi i casi ogni client riceve un mix casuale ma riproducibile di finestre di
     istituzioni diverse, non solo di una singola istituzione.
 
-    Il risultato viene cachato per (partition_id, num_partitions, split): ricostruirlo
-    ad ogni round rilegge e riscorre i loader per istituzione trattiene memoria non rilasciata ad ogni chiamata.
-    Con la cache, eseguo una sola volta per client per l'intera durata della run,
+    Il risultato viene cachato, con la cache, eseguo una sola volta per client per l'intera durata della run,
     invece che una volta per round.
     """
     # cahce per client e split: se il client ha già caricato i dati in un round precedente, li riutilizza senza rileggerli da cesnet_tszoo
@@ -225,18 +226,18 @@ def load_data(partition_id: int, num_partitions: int, run_config: dict, split: s
         return _load_data_cache[cache_key]  # hit: nei round successivi salta subito il ricaricamento da cesnet_tszoo
 
     if split == "train":
-        X_pool, Y_pool = _pool_periodo_cached("train", num_partitions, run_config)
+        X_pool, Y_pool = finestre_periodo("train", run_config)
         seed = int(run_config["random-state"])
         rng = np.random.default_rng(seed)   # fisso il seed per avere la stessa mescolazione casuale ma identica per ogni run
-        blocco = np.array_split(rng.permutation(len(X_pool)), num_partitions)[partition_id]
+        blocco = np.array_split(rng.permutation(len(X_pool)), num_partitions)[partition_id] #divido in tot blocchi quanti sono i client (num partition) e li assegno
     else:
-        X_pool, Y_pool, _, blocchi_client = _split_test_globale_client(num_partitions, run_config)
+        X_pool, Y_pool, _, blocchi_client = split_test_globale(num_partitions, run_config)
         blocco = blocchi_client[partition_id]
 
     X, Y = X_pool[blocco], Y_pool[blocco]   # ritorno le finestre di questo client, un mix casuale ma riproducibile di tutte le istituzioni del pool
 
     batch_size = int(run_config["batch-size"])
-    result = _dividi_in_batch(X, Y, batch_size)
+    result = dividi_in_batch(X, Y, batch_size)
     _load_data_cache[cache_key] = result  # miss: memorizza il risultato, così viene calcolato una volta sola per client
     return result
 
