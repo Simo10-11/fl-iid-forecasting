@@ -6,27 +6,47 @@ from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedAvg
 from flwr.serverapp.strategy.strategy_utils import aggregate_metricrecords
 
-from fl_iid_netforecast.task import build_model, get_device, load_test_globale
+from fl_iid_netforecast.task import build_model, get_device, load_test_globale, metriche_da_statistiche_additive
 from fl_iid_netforecast.task import test as test_fn
 
 app = ServerApp()
 
 
-def aggrega_e_stampa(records: list[RecordDict], weighting_metric_name: str, fase: str) -> MetricRecord:
-    """Stampa quanti client hanno partecipato a questa fase del round, poi delega l'aggregazione vera a Flower.
-    Con lo split IID ogni client mescola più istituzioni, quindi qui non ha più senso elencarle
-    per round."""
-
-    print(f" {fase} -> {len(records)} client coinvolti")
+def aggrega_train(records: list[RecordDict], weighting_metric_name: str) -> MetricRecord:
+    """Media pesata (per num-examples) della train_mse locale di ogni client. La MSE è additiva
+    (media di errori al quadrato), quindi qui la media pesata generica di Flower
+    (aggregate_metricrecords) è già esatta: non serve una logica custom come per l'evaluate."""
+    print(f" train -> {len(records)} client coinvolti")
     return aggregate_metricrecords(records, weighting_metric_name)  #aggregate_metricrecords è la funzione DI FLOWER
 
 
-def aggrega_train(records: list[RecordDict], weighting_metric_name: str) -> MetricRecord:
-    return aggrega_e_stampa(records, weighting_metric_name, "train")
-
-
 def aggrega_evaluate(records: list[RecordDict], weighting_metric_name: str) -> MetricRecord:
-    return aggrega_e_stampa(records, weighting_metric_name, "evaluate")
+    """Aggrega le metriche di evaluate senza usare la media pesata generica di Flower per
+    rmse/r2/harmonic: non sono lineari, quindi mediare i valori già
+    calcolati da ogni client non equivale a calcolarli sull'unione dei dati di tutti i client
+    (esempio: due client con rmse locale 1 e 3 sullo stesso numero di finestre non danno un
+    rmse globale di 2, ma sqrt(5) ≈ 2.236).
+
+    Ogni client manda invece statistiche additive. Qui vengono sommate su tutti i client coinvolti in questo
+    round, e le metriche finali vengono calcolate una sola volta, come se il modello fosse stato
+    valutato sull'intero test set federato in un unico batch."""
+    print(f" evaluate -> {len(records)} client coinvolti")
+
+    total_sse = total_sum_y = total_sum_y_sq = 0.0
+    total_num_values = 0
+    for record in records:
+        metricrecord = next(iter(record.metric_records.values()))
+        total_sse += metricrecord["sse"]
+        total_sum_y += metricrecord["sum_y"]
+        total_sum_y_sq += metricrecord["sum_y_sq"]
+        total_num_values += metricrecord["num_values"]
+
+    mse, rmse, r2, h_score = metriche_da_statistiche_additive(
+        total_sse, total_sum_y, total_sum_y_sq, total_num_values
+    )
+    return MetricRecord(
+        {"mse": mse, "rmse": rmse, "r2": r2, "harmonic": h_score, "num_values": total_num_values}
+    )
 
 
 def crea_evaluate_centralizzato(run_config: dict, num_partitions: int):
@@ -83,7 +103,8 @@ def main(grid: Grid, context: Context):
         min_available_nodes=min_available_clients,
         weighted_by_key="num-examples", # serve per pesare l'aggregazione dei pesi e delle metriche in base al numero di finestre locali di ogni istituzione (è di default)
         
-        # stampano quanti client hanno partecipato, poi delegano l'aggregazione a Flower
+        # train_mse è additiva (media pesata generica di Flower va bene); rmse/r2/harmonic
+        # dell'evaluate no, quindi aggrega_evaluate le ricalcola da statistiche additive
         train_metrics_aggr_fn=aggrega_train,
         evaluate_metrics_aggr_fn=aggrega_evaluate,
     )

@@ -256,6 +256,36 @@ def harmonic_score(rmse, r2):
     return 2 * (rmse_clipped * r2_term) / (rmse_clipped + r2_term)
 
 
+def statistiche_additive(trues, preds):
+    """Statistiche additive (somme, non medie) calcolate da un client sul proprio test set locale.
+
+    Servono al server per ricostruire mse/rmse/r2 esatti: rmse e r2 non sono lineari, quindi
+    mediarli, anche pesando per numero di finestre, non equivale a calcolarli sui dati concatenati
+    Nessun dato grezzo lascia il client: solo 4 numeri.
+     (esempio: due client con rmse locale 1 e 3 sullo stesso numero di finestre non danno un
+    rmse globale di 2, ma sqrt(5) ≈ 2.236).
+    """
+    errors = preds - trues
+    sse = errors.square().sum().item()
+    sum_y = trues.sum().item()
+    sum_y_sq = trues.square().sum().item()
+    num_values = trues.numel()
+    return sse, sum_y, sum_y_sq, num_values
+
+
+def metriche_da_statistiche_additive(sse, sum_y, sum_y_sq, num_values):
+    """Ricalcola mse/rmse/r2/harmonic a partire da statistiche additive sommate su più client"""
+    mse = sse / num_values
+    rmse = mse ** 0.5
+    sst = sum_y_sq - (sum_y ** 2 / num_values)  # somma dei quadrati degli scarti dalla media GLOBALE dei target
+    if sst > 0:
+        r2 = 1.0 - sse / sst
+    else:
+        r2 = 1.0 if sse == 0 else 0.0  # varianza nulla: predizione perfetta o convenzionalmente 0
+    h_score = harmonic_score(rmse, r2)
+    return mse, rmse, r2, h_score
+
+
 
 
 def train_one_epoch(model, loader, criterion, optimizer, device):

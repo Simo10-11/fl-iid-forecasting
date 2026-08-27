@@ -3,7 +3,7 @@
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 
-from fl_iid_netforecast.task import build_model, get_device, load_data
+from fl_iid_netforecast.task import build_model, get_device, load_data, statistiche_additive
 from fl_iid_netforecast.task import test as test_fn
 from fl_iid_netforecast.task import train as train_fn
 
@@ -74,15 +74,18 @@ def evaluate(msg: Message, context: Context):
     num_partitions = context.node_config["num-partitions"]
     test_loader = load_data(partition_id, num_partitions, context.run_config, split="test")
 
-    mse, rmse, r2, h_score, _, _ = test_fn(model, test_loader, device)
+    _, _, _, _, trues, preds = test_fn(model, test_loader, device)
 
-    # Metriche calcolate localmente sul mix di istituzioni di questo client. Il server ne
-    # farà la media pesata per num-examples (numero di finestre valutate da questo client).
+    # Statistiche additive (somme, non medie) di questo client, invece di mediare le
+    # metriche locali (scorretto per rmse/r2, che non sono lineari. Nessun dato
+    # grezzo lascia il client, solo 4 numeri.
+    sse, sum_y, sum_y_sq, num_values = statistiche_additive(trues, preds)
+
     metrics = {
-        "mse": mse,
-        "rmse": rmse,
-        "r2": r2,
-        "harmonic": h_score,
+        "sse": sse,
+        "sum_y": sum_y,
+        "sum_y_sq": sum_y_sq,
+        "num_values": num_values,
         "num-examples": sum(len(X) for X, _ in test_loader),
     }
     content = RecordDict({"metrics": MetricRecord(metrics)})    #non mandoi i pesi ( non c'è ArrayRecord), ma solo le metriche per dare valutazione
