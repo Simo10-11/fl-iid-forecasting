@@ -22,7 +22,7 @@ def aggrega_train(records: list[RecordDict], weighting_metric_name: str) -> Metr
 
 def aggrega_evaluate(records: list[RecordDict], weighting_metric_name: str) -> MetricRecord:
     """Aggrega le metriche di evaluate senza usare la media pesata generica di Flower per
-    rmse/r2/harmonic: non sono lineari, quindi mediare i valori già
+    rmse/r2/mae: non sono lineari, quindi mediare i valori già
     calcolati da ogni client non equivale a calcolarli sull'unione dei dati di tutti i client
     (esempio: due client con rmse locale 1 e 3 sullo stesso numero di finestre non danno un
     rmse globale di 2, ma sqrt(5) ≈ 2.236).
@@ -32,20 +32,21 @@ def aggrega_evaluate(records: list[RecordDict], weighting_metric_name: str) -> M
     valutato sull'intero test set federato in un unico batch."""
     print(f" evaluate -> {len(records)} client coinvolti")
 
-    total_sse = total_sum_y = total_sum_y_sq = 0.0
+    total_sse = total_sum_abs_error = total_sum_y = total_sum_y_sq = 0.0
     total_num_values = 0
     for record in records:
         metricrecord = next(iter(record.metric_records.values()))
         total_sse += metricrecord["sse"]
+        total_sum_abs_error += metricrecord["sum_abs_error"]
         total_sum_y += metricrecord["sum_y"]
         total_sum_y_sq += metricrecord["sum_y_sq"]
         total_num_values += metricrecord["num_values"]
 
-    mse, rmse, r2, h_score = metriche_da_statistiche_additive(
-        total_sse, total_sum_y, total_sum_y_sq, total_num_values
+    mse, rmse, r2, mae = metriche_da_statistiche_additive(
+        total_sse, total_sum_abs_error, total_sum_y, total_sum_y_sq, total_num_values
     )
     return MetricRecord(
-        {"mse": mse, "rmse": rmse, "r2": r2, "harmonic": h_score, "num_values": total_num_values}
+        {"mse": mse, "rmse": rmse, "r2": r2, "mae": mae, "num_values": total_num_values}
     )
 
 
@@ -60,12 +61,12 @@ def crea_evaluate_centralizzato(run_config: dict, num_partitions: int):
     def evaluate_fn(server_round: int, arrays: ArrayRecord) -> MetricRecord:
         model = build_model(run_config)
         model.load_state_dict(arrays.to_torch_state_dict())
-        mse, rmse, r2, h_score, _, _ = test_fn(model, test_loader, device)
+        mse, rmse, r2, mae, _, _ = test_fn(model, test_loader, device)
         print(
             f" global evaluation (server) -> round {server_round}: "
-            f"mse={mse:.4f} rmse={rmse:.4f} r2={r2:.4f} harmonic={h_score:.4f}"
+            f"mse={mse:.4f} rmse={rmse:.4f} r2={r2:.4f} mae={mae:.4f}"
         )
-        return MetricRecord({"mse": mse, "rmse": rmse, "r2": r2, "harmonic": h_score})
+        return MetricRecord({"mse": mse, "rmse": rmse, "r2": r2, "mae": mae})
 
     return evaluate_fn
 
@@ -103,7 +104,7 @@ def main(grid: Grid, context: Context):
         min_available_nodes=min_available_clients,
         weighted_by_key="num-examples", # serve per pesare l'aggregazione dei pesi e delle metriche in base al numero di finestre locali di ogni istituzione (è di default)
         
-        # train_mse è additiva (media pesata generica di Flower va bene); rmse/r2/harmonic
+        # train_mse è additiva (media pesata generica di Flower va bene); rmse/r2/mae
         # dell'evaluate no, quindi aggrega_evaluate le ricalcola da statistiche additive
         train_metrics_aggr_fn=aggrega_train,
         evaluate_metrics_aggr_fn=aggrega_evaluate,

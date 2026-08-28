@@ -77,12 +77,13 @@ def evaluate(msg: Message, context: Context):
     _, _, _, _, trues, preds = test_fn(model, test_loader, device)
 
     # Statistiche additive (somme, non medie) di questo client, invece di mediare le
-    # metriche locali (scorretto per rmse/r2, che non sono lineari. Nessun dato
-    # grezzo lascia il client, solo 4 numeri.
-    sse, sum_y, sum_y_sq, num_values = statistiche_additive(trues, preds)
+    # metriche locali (scorretto per rmse/r2/mae, che non sono lineari. Nessun dato
+    # grezzo lascia il client, solo 5 numeri.
+    sse, sum_abs_error, sum_y, sum_y_sq, num_values = statistiche_additive(trues, preds)
 
     metrics = {
         "sse": sse,
+        "sum_abs_error": sum_abs_error,
         "sum_y": sum_y,
         "sum_y_sq": sum_y_sq,
         "num_values": num_values,

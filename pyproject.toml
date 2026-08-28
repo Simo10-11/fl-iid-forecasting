@@ -13,6 +13,7 @@ dependencies = [
     "cesnet-tszoo>=2.2.0",
     "scikit-learn>=1.4.0",
     "numpy",
+    "ipython",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -58,11 +59,11 @@ random-state = 42   #riproducibilità partizionamento
 hidden-size = 100
 num-layers = 1
 dropout = 0.0
-learning-rate = 0.0003
+learning-rate = 0.001
 batch-size = 16     # numero di FINESTRE concatenate per formare un mini-batch
 
 # --- Federated Learning ---
-num-server-rounds = 30
+num-server-rounds = 25
 local-epochs = 3    #epoche per round in ogni client
 fraction-train = 0.3   #percentuale selezionata tra i client disponibili per train
 fraction-evaluate = 0.5  #percentuale selezionata tra i client disponibili per test

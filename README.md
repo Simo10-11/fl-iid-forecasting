@@ -69,8 +69,8 @@ Durante l'esecuzione vengono stampati:
 
 - il pool di istituzioni usato per lo split IID e la dimensione del test set globale del server, una sola volta a inizio run
 - un log per ogni fase di ogni round (`train -> N client coinvolti`, `evaluate -> N client coinvolti`)
-- le metriche aggregate di training (`train_mse`) e di valutazione federata (`mse`, `rmse`, `r2`, `harmonic`) sui client
-- le metriche di **global evaluation** (`mse`, `rmse`, `r2`, `harmonic`) calcolate dal server sul proprio test set globale, prima del round 1 e dopo ogni round
+- le metriche aggregate di training (`train_mse`) e di valutazione federata (`mse`, `rmse`, `r2`, `mae`) sui client
+- le metriche di **global evaluation** (`mse`, `rmse`, `r2`, `mae`) calcolate dal server sul proprio test set globale, prima del round 1 e dopo ogni round
 
 Se `save-model = true` (default), a fine run il modello globale finale viene salvato come `final_model.pt` nella cartella del progetto.
 

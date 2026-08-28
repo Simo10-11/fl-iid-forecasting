@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from sklearn.metrics import r2_score, root_mean_squared_error
+from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 
 from cesnet_tszoo.configs import TimeBasedConfig
 from cesnet_tszoo.datasets import CESNET_TimeSeries24
@@ -244,46 +244,35 @@ def load_data(partition_id: int, num_partitions: int, run_config: dict, split: s
 
 
 
-def harmonic_score(rmse, r2):
-    """Combina RMSE e R2 in un unico punteggio: media armonica, più basso è meglio.
-
-    Il clipping evita che un client con R2 o RMSE enorme ( magari varianza del target quasi nulla)
-    domini qualunque confronto o media. I valori di clipping sono forniti dal paper di riferimento
-    """
-    rmse_clipped = min(rmse, 11.0)
-    r2_clipped = max(r2, -10.0)
-    r2_term = abs(r2_clipped - 1)
-    return 2 * (rmse_clipped * r2_term) / (rmse_clipped + r2_term)
-
-
 def statistiche_additive(trues, preds):
     """Statistiche additive (somme, non medie) calcolate da un client sul proprio test set locale.
 
-    Servono al server per ricostruire mse/rmse/r2 esatti: rmse e r2 non sono lineari, quindi
-    mediarli, anche pesando per numero di finestre, non equivale a calcolarli sui dati concatenati
-    Nessun dato grezzo lascia il client: solo 4 numeri.
+    Servono al server per ricostruire mse/rmse/r2/mae esatti: rmse, r2 e mae non sono lineari,
+    quindi mediarli, anche pesando per numero di finestre, non equivale a calcolarli sui dati
+    concatenati. Nessun dato grezzo lascia il client: solo 5 numeri.
      (esempio: due client con rmse locale 1 e 3 sullo stesso numero di finestre non danno un
     rmse globale di 2, ma sqrt(5) ≈ 2.236).
     """
     errors = preds - trues
     sse = errors.square().sum().item()
+    sum_abs_error = errors.abs().sum().item()
     sum_y = trues.sum().item()
     sum_y_sq = trues.square().sum().item()
     num_values = trues.numel()
-    return sse, sum_y, sum_y_sq, num_values
+    return sse, sum_abs_error, sum_y, sum_y_sq, num_values
 
 
-def metriche_da_statistiche_additive(sse, sum_y, sum_y_sq, num_values):
-    """Ricalcola mse/rmse/r2/harmonic a partire da statistiche additive sommate su più client"""
+def metriche_da_statistiche_additive(sse, sum_abs_error, sum_y, sum_y_sq, num_values):
+    """Ricalcola mse/rmse/r2/mae a partire da statistiche additive sommate su più client"""
     mse = sse / num_values
     rmse = mse ** 0.5
+    mae = sum_abs_error / num_values
     sst = sum_y_sq - (sum_y ** 2 / num_values)  # somma dei quadrati degli scarti dalla media GLOBALE dei target
     if sst > 0:
         r2 = 1.0 - sse / sst
     else:
         r2 = 1.0 if sse == 0 else 0.0  # varianza nulla: predizione perfetta o convenzionalmente 0
-    h_score = harmonic_score(rmse, r2)
-    return mse, rmse, r2, h_score
+    return mse, rmse, r2, mae
 
 
 
@@ -344,10 +333,10 @@ def test(model, loader, device):
     trues_np = trues.cpu().numpy().flatten()
     preds_np = preds.cpu().numpy().flatten()
 
-    # metriche in scala normalizzata 
+    # metriche in scala normalizzata
     mse = F.mse_loss(preds, trues)
     rmse = root_mean_squared_error(trues_np, preds_np)
     r2 = r2_score(trues_np, preds_np)
-    h_score = harmonic_score(rmse, r2)
+    mae = mean_absolute_error(trues_np, preds_np)
 
-    return mse.item(), float(rmse), float(r2), float(h_score), trues, preds
+    return mse.item(), float(rmse), float(r2), float(mae), trues, preds
