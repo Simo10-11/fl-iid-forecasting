@@ -38,11 +38,15 @@ class LSTMForecast(nn.Module):
         # Bidirezionale: l'LSTM produce 2 * hidden_size feature per timestep
         self.fc = nn.Linear(hidden_size * 2, output_size)
 
-    #prende un batch di finestre e produce le predizioni    
+    #prende un batch di finestre e produce le predizioni
     def forward(self, x):
         " x: (batch_size, seq_len, input_size) -> out: (batch_size, output_size)"
-        out, _ = self.lstm(x)
-        return self.fc(out[:, -1, :])   
+        # La LSTM legge la finestra due volte: una in avanti (ora 0 -> 167) e una all'indietro
+        # (ora 167 -> 0). Vogliamo il riassunto di ENTRAMBE le letture a lettura completa, cioe'
+        # DOPO che ciascuna ha visto tutte le 168 ore. h_n contiene proprio
+        # questo: il risultato finale di ognuna delle due direzioni.
+        out, (h_n, _) = self.lstm(x)
+        return self.fc(torch.cat((h_n[-2], h_n[-1]), dim=1))
 
 
 #run_config pesco la configurazione di run dal server, che la passa a tutti i client ( vedi [tool.flwr.app.config] in pyproject.toml)
