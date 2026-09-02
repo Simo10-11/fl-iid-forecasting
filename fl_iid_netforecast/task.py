@@ -105,8 +105,9 @@ def finestre_periodo(periodo: str, run_config: dict):
     fittato dalla libreria SOLO sul periodo "train", quindi non vede mai dati da predire.
 
     Le istituzioni con troppi valori NaN vengono scartate. Le istituzioni che restano possono
-    comunque avere piccoli buchi isolati sotto soglia: quelli vengono comunque riempiti con 0
-    (default_values="default").
+    comunque avere piccoli buchi isolati sotto soglia: quelli vengono riempiti con l'ultimo valore
+    valido precedente (fill_missing_with="forward_filler"). I soli buchi a inizio serie (senza alcun
+    valore precedente) ricadono comunque su default_values="default" (0).
 
     Le finestre di tutte le istituzioni valide vengono concatenate in due unici array numpy
     (n_finestre, window_size, 1), non ancora mescolate né divise tra client/server.
@@ -130,13 +131,14 @@ def finestre_periodo(periodo: str, run_config: dict):
         sliding_window_step=int(run_config["prediction-window-size"]),
         random_state=int(run_config["random-state"]),
         transform_with="min_max_scaler",    # scaler viene fittato solo sul training set
-        nan_threshold=float(run_config["nan-threshold"]),  # esclude istituzioni con troppi NaN (vedi docstring sopra)
+        nan_threshold=float(run_config["nan-threshold"]),  # esclude istituzioni con troppi NaN 
+        fill_missing_with="forward_filler",  # buchi isolati residui: ultimo valore valido, 
         include_ts_id=False,
         include_time=False,
     )
     # I valori mancanti (sotto soglia nan_threshold, quindi istituzioni comunque valide)
-    # vengono riempiti automaticamente con 0 (default_values="default"), come descritto nel
-    # paper per le metriche di volume (n_flows, n_packets, n_bytes)
+    # vengono riempiti con forward-fill  default_values="default"
+    # resta solo il fallback per i buchi a inizio serie non riempibili.
     dataset.set_dataset_config_and_initialize(config, display_config_details=None)
     pool_valido = dataset.dataset_config.ts_ids.tolist() # lista di istituzioni che restano nel pool dopo aver scartato quelle con troppi NaN
     n_escluse = len(pool) - len(pool_valido)

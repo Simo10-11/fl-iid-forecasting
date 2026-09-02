@@ -63,10 +63,10 @@ learning-rate = 0.001
 batch-size = 16     # numero di FINESTRE concatenate per formare un mini-batch
 
 # --- Federated Learning ---
-num-server-rounds = 25
+num-server-rounds = 30
 local-epochs = 3    #epoche per round in ogni client
 fraction-train = 0.3   #percentuale selezionata tra i client disponibili per train
-fraction-evaluate = 0.5  #percentuale selezionata tra i client disponibili per test
+fraction-evaluate = 1  #percentuale selezionata tra i client disponibili per test
 min-available-clients = 2          #numero di client minimo sul quale lavorare
 save-model = true
 
