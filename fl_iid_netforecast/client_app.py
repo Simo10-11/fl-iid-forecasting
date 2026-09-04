@@ -14,14 +14,14 @@ def model_from_message(msg: Message, context: Context):
     """Costruisce un modello locale con i pesi del modello globale inviati dal server.
     Il modello locale non viene mai inizializzato con pesi random: riparte sempre da
     quelli ricevuti dal server, altrimenti il federated averaging non convergerebbe.
-    
+
     msg: contiene i pesi del modello globale inviati dal server
     context: contiene la configurazione del run (architettura, numero di layer)
     """
 
     model = build_model(context.run_config) # costruisce un modello LSTM vuoto con l'architettura specificata nel run_config (pesi per ora casuali)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())  # carica i pesi del modello globale inviati dal server nel modello LSTM vuoto appena costruito
-    return model        #ritorno modello LSTM inizializzato 
+    return model        #ritorno modello LSTM inizializzato
 
 
 @app.train()
@@ -53,7 +53,7 @@ def train(msg: Message, context: Context):
         "num-examples": num_examples,
     }
     content = RecordDict(
-        {"arrays": ArrayRecord(model.state_dict()), "metrics": MetricRecord(metrics)}   # costruisco un RecordDict con i pesi aggiornati del modello e le metriche calcolate localmente, che verranno inviate al server 
+        {"arrays": ArrayRecord(model.state_dict()), "metrics": MetricRecord(metrics)}   # costruisco un RecordDict con i pesi aggiornati del modello e le metriche calcolate localmente, che verranno inviate al server
     )
     return Message(content=content, reply_to=msg)   #non mando dati, ma solo pesi e 3 numeri
 
@@ -66,15 +66,24 @@ def train(msg: Message, context: Context):
 
 @app.evaluate()
 def evaluate(msg: Message, context: Context):
-    """Testa il modello globale (aggregato, non locale) sul blocco IID di test locale di questo client."""
+    """Testa il modello globale (aggregato, non locale) sul blocco locale di questo client.
+
+    Di default valuta sul VALIDATION :è la chiamata che gira ad
+    ogni round della strategia normale, usata dal server per il monitoraggio e la model
+    selection (vedi crea_checkpoint in server_app.py). Il campo "eval-split" nel config del
+    messaggio, se presente, sceglie lo split da usare: il server lo imposta a "test" SOLO nel
+    round extra di valutazione finale, non durante i
+    round normali — così il test set di questo client resta isolato fino a quel momento.
+    """
     model = model_from_message(msg, context)
     device = get_device()
 
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    test_loader = load_data(partition_id, num_partitions, context.run_config, split="test")
+    eval_split = msg.content["config"].get("eval-split", "validation")
+    loader = load_data(partition_id, num_partitions, context.run_config, split=eval_split)
 
-    _, _, _, _, trues, preds = test_fn(model, test_loader, device)
+    _, _, _, _, trues, preds = test_fn(model, loader, device)
 
     # Statistiche additive (somme, non medie) di questo client, invece di mediare le
     # metriche locali (scorretto per rmse/r2/mae, che non sono lineari. Nessun dato
@@ -87,7 +96,8 @@ def evaluate(msg: Message, context: Context):
         "sum_y": sum_y,
         "sum_y_sq": sum_y_sq,
         "num_values": num_values,
-        "num-examples": sum(len(X) for X, _ in test_loader),
+        "num-examples": sum(len(X) for X, _ in loader),
+        "partition-id": partition_id,  # solo per identificare il client nei log del server (es. il breakdown per client del test finale)
     }
     content = RecordDict({"metrics": MetricRecord(metrics)})    #non mandoi i pesi ( non c'è ArrayRecord), ma solo le metriche per dare valutazione
     return Message(content=content, reply_to=msg)

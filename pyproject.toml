@@ -35,24 +35,21 @@ target-feature = "n_bytes"
 training-window-size = 168
 prediction-window-size = 24
 
-# train_time_period/test_time_period: split temporale per istituzioni
-# Il 70% iniziale (train) va  ai client come training locale.
-# Il 30% finale (test) viene mescolato IID tra tutte le istituzioni e diviso tra server e client: 
-#la somma di test globale + somma dei test locali dei client coincide sempre esattamente con questo 30%.
+# train-time-period/validation-time-period/test-time-period: split CRONOLOGICO (senza shuffle)
+# lungo l'asse temporale di OGNI istituzione, 
+# Ogni client usa il proprio 70% per il
+# training locale, il proprio 15% intermedio per la validazione federata round-per-round (e la
+# model selection), e il proprio 15% più recente per il test finale, valutato una sola volta a
+# fine training. 
 train-time-period = 0.7
-test-time-period = 0.3
+validation-time-period = 0.15
+test-time-period = 0.15
 
 # nan-threshold: parametro di cesnet_tszoo. Esclude dal pool le
-# istituzioni con più di questa frazione di valori NaN 
+# istituzioni con più di questa frazione di valori NaN in ogni split
 # 0.1 = esclude chi ha più del 10% di dati mancanti
 nan-threshold = 0.1
 
-# global-test-fraction: frazione del pool TEST,
-# riservata al server come test set GLOBALE, isolata PRIMA di partizionare il resto tra i client 
-#[0.5 significa la metà del campione assegnato per test va al test centralizzato]. Il resto del pool test viene partizionato IID tra i
-# client, come test LOCALE per la federated evaluation.
-
-global-test-fraction = 0.5
 random-state = 42   #riproducibilità partizionamento
 
 # --- Modello LSTM ---
@@ -66,7 +63,7 @@ batch-size = 16     # numero di FINESTRE concatenate per formare un mini-batch
 num-server-rounds = 30
 local-epochs = 3    #epoche per round in ogni client
 fraction-train = 0.3   #percentuale selezionata tra i client disponibili per train
-fraction-evaluate = 1  #percentuale selezionata tra i client disponibili per test
+fraction-evaluate = 1  #percentuale selezionata tra i client disponibili per la validazione federata round-per-round
 min-available-clients = 2          #numero di client minimo sul quale lavorare
 save-model = true
 
